@@ -23,6 +23,23 @@ pip install -r requirements.txt
 
 ## Usage
 
+### GUI Version (Recommended)
+
+For easier use, run the graphical interface:
+
+```bash
+python automation_gui.py
+```
+
+The GUI provides:
+- One-click recording and replay controls
+- Visual status indicators
+- File browser for loading/saving recordings
+- Real-time log output
+- Easy-to-use settings for repeat count and delay
+
+### Command Line Version
+
 Run the automation script:
 
 ```bash
@@ -69,6 +86,19 @@ You'll be presented with three options:
 - **First Alt+Tab**: The first Alt+Tab you press after starting recording is automatically skipped, making it easy to switch to your target application without recording the window switch.
 
 ## Example Workflow
+
+### Using the GUI:
+
+1. Run `python automation_gui.py`
+2. Click "Start Recording"
+3. Press Alt+Tab to switch to your target application (this won't be recorded)
+4. Perform your actions (move mouse, click, type, etc.)
+5. Press **F9** to stop recording and auto-save, or click "Stop Recording"
+6. Click "Load Recording" to load a saved file
+7. Set repeat count and delay, then click "Start Replay"
+8. Press **F9** at any time during replay to stop playback
+
+### Using the Command Line:
 
 1. Run `python automation.py`
 2. Choose option 1 (Record)
