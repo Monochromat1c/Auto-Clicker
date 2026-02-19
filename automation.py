@@ -25,8 +25,6 @@ class ActionRecorder:
         self.alt_pressed = False
         self.auto_save_callback = auto_save_callback
         self.auto_saved = False
-        self.first_alt_tab_skipped = False
-        self.skipping_first_alt_tab = False
         
     def start_recording(self):
         """Start recording mouse and keyboard actions."""
@@ -49,7 +47,7 @@ class ActionRecorder:
         )
         self.keyboard_listener.start()
         
-        print("Recording started... Press F9 to stop and auto-save, or ESC to stop without saving.")
+        print("Recording started... Press Alt+Shift+Q to stop and auto-save, or ESC to stop without saving.")
         
     def stop_recording(self):
         """Stop recording and return the recorded actions."""
@@ -101,16 +99,22 @@ class ActionRecorder:
     def _on_key_press(self, key):
         """Record key press."""
         if self.recording:
-            # Check for F9 key (auto-save) or ESC key (no save) first, before recording
-            # Check for F9 key
-            try:
-                is_f9 = key == Key.f9
-            except AttributeError:
-                # Fallback to string comparison if Key.f9 doesn't exist
-                is_f9 = str(key) == 'Key.f9'
+            # Track modifier keys first
+            if key == Key.shift or key == Key.shift_l or key == Key.shift_r:
+                self.shift_pressed = True
+            elif key == Key.alt or key == Key.alt_l or key == Key.alt_r:
+                self.alt_pressed = True
             
-            if is_f9:
-                # Stop recording and trigger auto-save (don't record F9)
+            # Check for Alt+Shift+Q (stop and save) or ESC key (no save) after tracking modifiers
+            # Check for Alt+Shift+Q key combination
+            try:
+                is_q = key.char == 'q' or key.char == 'Q'
+            except (AttributeError, TypeError):
+                is_q = False
+            is_alt_shift_q = is_q and self.shift_pressed and self.alt_pressed
+            
+            if is_alt_shift_q:
+                # Stop recording and trigger auto-save (don't record Alt+Shift+Q)
                 self.recording = False
                 if self.auto_save_callback:
                     self.auto_save_callback(self.actions)
@@ -120,32 +124,19 @@ class ActionRecorder:
                 # Stop recording without auto-save (don't record ESC)
                 return False
             
-            # Track modifier keys first
-            if key == Key.shift or key == Key.shift_l or key == Key.shift_r:
-                self.shift_pressed = True
-            elif key == Key.alt or key == Key.alt_l or key == Key.alt_r:
-                self.alt_pressed = True
-            
-            # Skip recording the first Alt+Tab combination
-            # When Tab is pressed while Alt is held (and Shift is not), skip the first occurrence
-            if key == Key.tab and self.alt_pressed and not self.shift_pressed:
-                if not self.first_alt_tab_skipped:
-                    self.first_alt_tab_skipped = True
-                    self.skipping_first_alt_tab = True
-                    # Remove any Alt key press that was just recorded (if it exists)
-                    # Find and remove the most recent Alt key press/release
-                    for i in range(len(self.actions) - 1, -1, -1):
-                        action = self.actions[i]
-                        if action['type'] in ['key_press', 'key_release']:
-                            key_str = action.get('key', '')
-                            if 'alt' in key_str.lower() or key_str in ['Key.alt', 'Key.alt_l', 'Key.alt_r']:
-                                self.actions.pop(i)
-                                break
-                    return
-            
             # Skip recording Shift+Alt+Tab combination
             if key == Key.tab and self.shift_pressed and self.alt_pressed:
                 return
+            
+            # Skip recording hotkey combinations (Alt+Shift+Q, Alt+Shift+W)
+            if self.shift_pressed and self.alt_pressed:
+                try:
+                    is_q = key.char == 'q' or key.char == 'Q'
+                    is_w = key.char == 'w' or key.char == 'W'
+                    if is_q or is_w:
+                        return
+                except (AttributeError, TypeError):
+                    pass
             
             elapsed = time.time() - self.start_time
             try:
@@ -162,26 +153,24 @@ class ActionRecorder:
     def _on_key_release(self, key):
         """Record key release."""
         if self.recording:
-            # Skip recording the first Alt+Tab combination (check before updating modifier states)
-            if key == Key.tab and self.alt_pressed and not self.shift_pressed:
-                if self.skipping_first_alt_tab:
-                    # This is the first Alt+Tab release, skip it
-                    return
-            
             # Skip recording Shift+Alt+Tab combination (check before updating modifier states)
             if key == Key.tab and self.shift_pressed and self.alt_pressed:
                 return
+            
+            # Skip recording hotkey combinations (Alt+Shift+Q, Alt+Shift+W)
+            if self.shift_pressed and self.alt_pressed:
+                try:
+                    is_q = key.char == 'q' or key.char == 'Q'
+                    is_w = key.char == 'w' or key.char == 'W'
+                    if is_q or is_w:
+                        return
+                except (AttributeError, TypeError):
+                    pass
             
             # Track modifier keys
             if key == Key.shift or key == Key.shift_l or key == Key.shift_r:
                 self.shift_pressed = False
             elif key == Key.alt or key == Key.alt_l or key == Key.alt_r:
-                # If we're skipping the first Alt+Tab, don't record Alt key releases either
-                if self.skipping_first_alt_tab:
-                    # Check if Alt is being released (which ends the Alt+Tab sequence)
-                    self.alt_pressed = False
-                    self.skipping_first_alt_tab = False
-                    return
                 self.alt_pressed = False
             
             elapsed = time.time() - self.start_time
@@ -206,34 +195,53 @@ class ActionReplayer:
         self.replaying = False
         self.stop_replay = False
         self.keyboard_listener = None
+        self._shift_pressed = False
+        self._alt_pressed = False
         
     def _on_key_press_replay(self, key):
-        """Handle key press during replay - stop on F9."""
-        # Check for F9 key
+        """Handle key press during replay - stop on Alt+Shift+W."""
         try:
-            is_f9 = key == Key.f9
+            if key in [Key.shift, Key.shift_l, Key.shift_r]:
+                self._shift_pressed = True
+                return
+            if key in [Key.alt, Key.alt_l, Key.alt_r]:
+                self._alt_pressed = True
+                return
+            try:
+                is_w = key.char == 'w' or key.char == 'W'
+                if is_w and self._shift_pressed and self._alt_pressed:
+                    self.stop_replay = True
+                    return False
+            except (AttributeError, TypeError):
+                pass
         except AttributeError:
-            # Fallback to string comparison if Key.f9 doesn't exist
-            is_f9 = str(key) == 'Key.f9'
-        
-        if is_f9:
-            self.stop_replay = True
-            return False  # Stop the listener
+            pass
+    
+    def _on_key_release_replay(self, key):
+        """Track modifier keys during replay."""
+        try:
+            if key in [Key.shift, Key.shift_l, Key.shift_r]:
+                self._shift_pressed = False
+            if key in [Key.alt, Key.alt_l, Key.alt_r]:
+                self._alt_pressed = False
+        except AttributeError:
+            pass
     
     def replay(self, actions, repeat_count=1, delay_before_start=3):
         """Replay recorded actions a specified number of times."""
         self.replaying = True
         self.stop_replay = False
         
-        # Start keyboard listener to detect F9
+        # Start keyboard listener to detect Alt+Shift+W
         self.keyboard_listener = KeyboardListener(
-            on_press=self._on_key_press_replay
+            on_press=self._on_key_press_replay,
+            on_release=self._on_key_release_replay
         )
         self.keyboard_listener.start()
         
         print(f"\nStarting replay in {delay_before_start} seconds...")
         print(f"Will repeat {repeat_count} time(s).")
-        print("Press F9 to stop playback at any time.")
+        print("Press Alt+Shift+W to stop playback at any time.")
         time.sleep(delay_before_start)
         
         try:
@@ -405,7 +413,7 @@ def main():
         recorder = ActionRecorder(auto_save_callback=auto_save)
         recorder.start_recording()
         
-        # Wait for F9 or ESC to stop (handled in listener)
+        # Wait for Alt+Shift+Q or ESC to stop (handled in listener)
         try:
             while recorder.recording:
                 time.sleep(0.1)
@@ -413,7 +421,7 @@ def main():
             pass
         
         actions = recorder.stop_recording()
-        # Only prompt for filename if recording was stopped with ESC (not F9)
+        # Only prompt for filename if recording was stopped with ESC (not Alt+Shift+Q)
         if actions and not recorder.auto_saved:
             filename = input("Enter filename to save (default: recorded_actions.json): ").strip()
             if not filename:
