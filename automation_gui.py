@@ -156,11 +156,11 @@ class AutomationGUI:
                 if self._hotkey_shift_pressed and self._hotkey_alt_pressed:
                     try:
                         if key.char == 'q' or key.char == 'Q':
-                            # Alt+Shift+Q: Start recording if not recording, or stop if recording
+                            # Alt+Shift+Q: Start recording if not recording
+                            # Note: Stopping is handled by the recorder's own listener, so we don't call stop_recording here
                             if not self.is_recording and not self.is_replaying:
                                 self.root.after(0, self.start_recording)
-                            elif self.is_recording:
-                                self.root.after(0, self.stop_recording)
+                            # Don't call stop_recording here - the recorder handles Alt+Shift+Q itself
                             return
                         if key.char == 'w' or key.char == 'W':
                             # Alt+Shift+W: Start replay if not replaying, or stop if replaying
@@ -296,7 +296,18 @@ class AutomationGUI:
         if not self.is_recording or not self.recorder:
             return
         
-        # Stop the recorder (Alt+Shift+Q would have already done this, but handle manual stop)
+        # Check if already stopped and auto-saved (e.g., by Alt+Shift+Q hotkey)
+        if not self.recorder.recording and self.recorder.auto_saved:
+            # Already stopped and saved, just update UI state
+            self.is_recording = False
+            self.record_btn.config(state=tk.NORMAL)
+            self.stop_record_btn.config(state=tk.DISABLED)
+            self.load_btn.config(state=tk.NORMAL)
+            if self.loaded_actions:
+                self.replay_btn.config(state=tk.NORMAL)
+            return
+        
+        # Stop the recorder (manual stop via button)
         actions = self.recorder.stop_recording()
         self.is_recording = False
         
