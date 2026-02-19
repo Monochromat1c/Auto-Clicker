@@ -4,6 +4,7 @@ Records mouse and keyboard actions and replays them a specified number of times.
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from pynput import mouse, keyboard
@@ -14,12 +15,18 @@ from pynput.keyboard import Key, Listener as KeyboardListener
 class ActionRecorder:
     """Records mouse and keyboard actions."""
     
-    def __init__(self):
+    def __init__(self, auto_save_callback=None):
         self.actions = []
         self.start_time = None
         self.mouse_listener = None
         self.keyboard_listener = None
         self.recording = False
+        self.shift_pressed = False
+        self.alt_pressed = False
+        self.auto_save_callback = auto_save_callback
+        self.auto_saved = False
+        self.first_alt_tab_skipped = False
+        self.skipping_first_alt_tab = False
         
     def start_recording(self):
         """Start recording mouse and keyboard actions."""
@@ -42,7 +49,7 @@ class ActionRecorder:
         )
         self.keyboard_listener.start()
         
-        print("Recording started... Press ESC to stop recording.")
+        print("Recording started... Press F9 to stop and auto-save, or ESC to stop without saving.")
         
     def stop_recording(self):
         """Stop recording and return the recorded actions."""
@@ -94,6 +101,52 @@ class ActionRecorder:
     def _on_key_press(self, key):
         """Record key press."""
         if self.recording:
+            # Check for F9 key (auto-save) or ESC key (no save) first, before recording
+            # Check for F9 key
+            try:
+                is_f9 = key == Key.f9
+            except AttributeError:
+                # Fallback to string comparison if Key.f9 doesn't exist
+                is_f9 = str(key) == 'Key.f9'
+            
+            if is_f9:
+                # Stop recording and trigger auto-save (don't record F9)
+                self.recording = False
+                if self.auto_save_callback:
+                    self.auto_save_callback(self.actions)
+                    self.auto_saved = True
+                return False
+            elif key == Key.esc:
+                # Stop recording without auto-save (don't record ESC)
+                return False
+            
+            # Track modifier keys first
+            if key == Key.shift or key == Key.shift_l or key == Key.shift_r:
+                self.shift_pressed = True
+            elif key == Key.alt or key == Key.alt_l or key == Key.alt_r:
+                self.alt_pressed = True
+            
+            # Skip recording the first Alt+Tab combination
+            # When Tab is pressed while Alt is held (and Shift is not), skip the first occurrence
+            if key == Key.tab and self.alt_pressed and not self.shift_pressed:
+                if not self.first_alt_tab_skipped:
+                    self.first_alt_tab_skipped = True
+                    self.skipping_first_alt_tab = True
+                    # Remove any Alt key press that was just recorded (if it exists)
+                    # Find and remove the most recent Alt key press/release
+                    for i in range(len(self.actions) - 1, -1, -1):
+                        action = self.actions[i]
+                        if action['type'] in ['key_press', 'key_release']:
+                            key_str = action.get('key', '')
+                            if 'alt' in key_str.lower() or key_str in ['Key.alt', 'Key.alt_l', 'Key.alt_r']:
+                                self.actions.pop(i)
+                                break
+                    return
+            
+            # Skip recording Shift+Alt+Tab combination
+            if key == Key.tab and self.shift_pressed and self.alt_pressed:
+                return
+            
             elapsed = time.time() - self.start_time
             try:
                 key_str = key.char
@@ -105,14 +158,32 @@ class ActionRecorder:
                 'key': key_str,
                 'time': elapsed
             })
-            
-            # Stop recording on ESC key
-            if key == Key.esc:
-                return False
     
     def _on_key_release(self, key):
         """Record key release."""
         if self.recording:
+            # Skip recording the first Alt+Tab combination (check before updating modifier states)
+            if key == Key.tab and self.alt_pressed and not self.shift_pressed:
+                if self.skipping_first_alt_tab:
+                    # This is the first Alt+Tab release, skip it
+                    return
+            
+            # Skip recording Shift+Alt+Tab combination (check before updating modifier states)
+            if key == Key.tab and self.shift_pressed and self.alt_pressed:
+                return
+            
+            # Track modifier keys
+            if key == Key.shift or key == Key.shift_l or key == Key.shift_r:
+                self.shift_pressed = False
+            elif key == Key.alt or key == Key.alt_l or key == Key.alt_r:
+                # If we're skipping the first Alt+Tab, don't record Alt key releases either
+                if self.skipping_first_alt_tab:
+                    # Check if Alt is being released (which ends the Alt+Tab sequence)
+                    self.alt_pressed = False
+                    self.skipping_first_alt_tab = False
+                    return
+                self.alt_pressed = False
+            
             elapsed = time.time() - self.start_time
             try:
                 key_str = key.char
@@ -132,34 +203,90 @@ class ActionReplayer:
     def __init__(self):
         self.mouse_controller = mouse.Controller()
         self.keyboard_controller = keyboard.Controller()
+        self.replaying = False
+        self.stop_replay = False
+        self.keyboard_listener = None
         
+    def _on_key_press_replay(self, key):
+        """Handle key press during replay - stop on F9."""
+        # Check for F9 key
+        try:
+            is_f9 = key == Key.f9
+        except AttributeError:
+            # Fallback to string comparison if Key.f9 doesn't exist
+            is_f9 = str(key) == 'Key.f9'
+        
+        if is_f9:
+            self.stop_replay = True
+            return False  # Stop the listener
+    
     def replay(self, actions, repeat_count=1, delay_before_start=3):
         """Replay recorded actions a specified number of times."""
+        self.replaying = True
+        self.stop_replay = False
+        
+        # Start keyboard listener to detect F9
+        self.keyboard_listener = KeyboardListener(
+            on_press=self._on_key_press_replay
+        )
+        self.keyboard_listener.start()
+        
         print(f"\nStarting replay in {delay_before_start} seconds...")
         print(f"Will repeat {repeat_count} time(s).")
+        print("Press F9 to stop playback at any time.")
         time.sleep(delay_before_start)
         
-        for iteration in range(repeat_count):
-            print(f"\nReplay iteration {iteration + 1}/{repeat_count}")
-            start_time = time.time()
-            last_action_time = 0
-            
-            for action in actions:
-                # Wait for the correct timing
-                elapsed = time.time() - start_time
-                wait_time = action['time'] - last_action_time
-                if wait_time > 0:
-                    time.sleep(wait_time)
+        try:
+            for iteration in range(repeat_count):
+                if self.stop_replay:
+                    print(f"\nPlayback stopped by user at iteration {iteration + 1}")
+                    break
                 
-                # Execute the action
-                self._execute_action(action)
-                last_action_time = action['time']
+                print(f"\nReplay iteration {iteration + 1}/{repeat_count}")
+                start_time = time.time()
+                last_action_time = 0
+                
+                for action in actions:
+                    if self.stop_replay:
+                        print(f"\nPlayback stopped by user during iteration {iteration + 1}")
+                        break
+                    
+                    # Wait for the correct timing (check for stop during wait)
+                    elapsed = time.time() - start_time
+                    wait_time = action['time'] - last_action_time
+                    if wait_time > 0:
+                        # Break wait into smaller chunks to check for stop
+                        chunk_size = 0.1
+                        waited = 0
+                        while waited < wait_time and not self.stop_replay:
+                            sleep_time = min(chunk_size, wait_time - waited)
+                            time.sleep(sleep_time)
+                            waited += sleep_time
+                    
+                    if self.stop_replay:
+                        break
+                    
+                    # Execute the action
+                    self._execute_action(action)
+                    last_action_time = action['time']
+                
+                if self.stop_replay:
+                    break
+                
+                # Small delay between iterations
+                if iteration < repeat_count - 1:
+                    time.sleep(0.5)
             
-            # Small delay between iterations
-            if iteration < repeat_count - 1:
-                time.sleep(0.5)
-        
-        print("\nReplay completed!")
+            if not self.stop_replay:
+                print("\nReplay completed!")
+            else:
+                print("\nPlayback stopped.")
+        finally:
+            # Clean up
+            self.replaying = False
+            if self.keyboard_listener:
+                self.keyboard_listener.stop()
+                self.keyboard_listener = None
     
     def _execute_action(self, action):
         """Execute a single recorded action."""
@@ -222,6 +349,23 @@ class ActionReplayer:
             return key_str
 
 
+def get_numbered_filename(base_filename='recorded_actions.json'):
+    """Generate a numbered filename if the base filename already exists."""
+    if not os.path.exists(base_filename):
+        return base_filename
+    
+    # Split filename and extension
+    base_name, ext = os.path.splitext(base_filename)
+    counter = 1
+    
+    # Find the next available number
+    while True:
+        numbered_filename = f"{base_name}_{counter}{ext}"
+        if not os.path.exists(numbered_filename):
+            return numbered_filename
+        counter += 1
+
+
 def save_actions(actions, filename='recorded_actions.json'):
     """Save recorded actions to a JSON file."""
     with open(filename, 'w') as f:
@@ -250,10 +394,18 @@ def main():
     
     if choice == '1':
         # Record only
-        recorder = ActionRecorder()
+        def auto_save(actions):
+            """Auto-save callback with numbered filename."""
+            if actions:
+                filename = get_numbered_filename('recorded_actions.json')
+                save_actions(actions, filename)
+            else:
+                print("No actions to save.")
+        
+        recorder = ActionRecorder(auto_save_callback=auto_save)
         recorder.start_recording()
         
-        # Wait for ESC to stop (handled in listener)
+        # Wait for F9 or ESC to stop (handled in listener)
         try:
             while recorder.recording:
                 time.sleep(0.1)
@@ -261,10 +413,12 @@ def main():
             pass
         
         actions = recorder.stop_recording()
-        if actions:
+        # Only prompt for filename if recording was stopped with ESC (not F9)
+        if actions and not recorder.auto_saved:
             filename = input("Enter filename to save (default: recorded_actions.json): ").strip()
             if not filename:
                 filename = 'recorded_actions.json'
+            filename = get_numbered_filename(filename)
             save_actions(actions, filename)
     
     elif choice == '2':
@@ -287,7 +441,19 @@ def main():
     
     elif choice == '3':
         # Record and replay immediately
-        recorder = ActionRecorder()
+        saved_actions = []
+        auto_saved = False
+        
+        def auto_save(actions):
+            """Auto-save callback with numbered filename."""
+            nonlocal saved_actions, auto_saved
+            if actions:
+                filename = get_numbered_filename('recorded_actions.json')
+                save_actions(actions, filename)
+                saved_actions = actions
+                auto_saved = True
+        
+        recorder = ActionRecorder(auto_save_callback=auto_save)
         recorder.start_recording()
         
         try:
@@ -297,6 +463,10 @@ def main():
             pass
         
         actions = recorder.stop_recording()
+        # Use saved actions if auto-saved, otherwise use current actions
+        if auto_saved and saved_actions:
+            actions = saved_actions
+        
         if actions:
             repeat_count = int(input("How many times to replay? (default: 1): ").strip() or "1")
             delay = int(input("Delay before start in seconds (default: 3): ").strip() or "3")
